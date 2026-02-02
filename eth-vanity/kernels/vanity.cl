@@ -80,8 +80,9 @@ static uint uint256_sub(uint256_t *r, const uint256_t *a, const uint256_t *b) {
 // r = (a + b) mod p
 static void fp_add(uint256_t *r, const uint256_t *a, const uint256_t *b) {
     uint carry = uint256_add(r, a, b);
-    if (carry || uint256_gte(r, &SECP256K1_P)) {
-        uint256_sub(r, r, &SECP256K1_P);
+    uint256_t p = SECP256K1_P;
+    if (carry || uint256_gte(r, &p)) {
+        uint256_sub(r, r, &p);
     }
 }
 
@@ -89,7 +90,8 @@ static void fp_add(uint256_t *r, const uint256_t *a, const uint256_t *b) {
 static void fp_sub(uint256_t *r, const uint256_t *a, const uint256_t *b) {
     uint borrow = uint256_sub(r, a, b);
     if (borrow) {
-        uint256_add(r, r, &SECP256K1_P);
+        uint256_t p = SECP256K1_P;
+        uint256_add(r, r, &p);
     }
 }
 
@@ -119,7 +121,7 @@ static void fp_mul(uint256_t *r, const uint256_t *a, const uint256_t *b) {
     // c = 0x1000003D1 (fits in 37 bits)
     // We multiply the high 256 bits by c and add to low 256 bits.
 
-    __constant ulong c_lo = 0x1000003D1UL;
+    ulong c_lo = 0x1000003D1UL;
 
     // First reduction: multiply high 8 limbs by c and add to low
     ulong carry = 0;
@@ -145,8 +147,11 @@ static void fp_mul(uint256_t *r, const uint256_t *a, const uint256_t *b) {
             for (int j = 0; j <= i; j++) {
                 r->d[j] = (uint)prod[j];
             }
-            if (uint256_gte(r, &SECP256K1_P)) {
-                uint256_sub(r, r, &SECP256K1_P);
+            {
+                uint256_t p = SECP256K1_P;
+                if (uint256_gte(r, &p)) {
+                    uint256_sub(r, r, &p);
+                }
             }
             return;
         }
@@ -157,8 +162,11 @@ static void fp_mul(uint256_t *r, const uint256_t *a, const uint256_t *b) {
     }
 
     // Final conditional subtraction
-    if (uint256_gte(r, &SECP256K1_P)) {
-        uint256_sub(r, r, &SECP256K1_P);
+    {
+        uint256_t p = SECP256K1_P;
+        if (uint256_gte(r, &p)) {
+            uint256_sub(r, r, &p);
+        }
     }
 }
 
