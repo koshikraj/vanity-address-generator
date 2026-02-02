@@ -1,0 +1,5 @@
+/target
+Cargo.lock
+*.pdb
+verify-with-safe-sdk/node_modules
+verify-with-safe-sdk/package-lock.json
