@@ -22,22 +22,61 @@ fn main() {
     }
 
     // Create the pattern
-    let pattern = Pattern::new(
-        config.normalized_pattern(),
-        config.pattern_type,
-        config.case_sensitive,
-    );
+    let pattern = if let Some(ref suffix) = config.normalized_suffix() {
+        Pattern::new_prefix_and_suffix(
+            config.normalized_pattern(),
+            suffix.clone(),
+            config.case_sensitive,
+        )
+    } else {
+        Pattern::new(
+            config.normalized_pattern(),
+            config.pattern_type,
+            config.case_sensitive,
+        )
+    };
 
     // Print startup info
     println!("Ethereum Vanity Address Generator");
     println!("==================================");
-    println!("Pattern:    {} ({})", pattern.pattern(), pattern.pattern_type());
+    let pattern_display = if let Some(suffix) = pattern.suffix() {
+        format!("{} ... {} ({})", pattern.pattern(), suffix, pattern.pattern_type())
+    } else {
+        format!("{} ({})", pattern.pattern(), pattern.pattern_type())
+    };
+    println!("Pattern:    {}", pattern_display);
     println!("Difficulty: {}", pattern.difficulty_description());
     println!("Workers:    {}", config.worker_count());
+
+    #[cfg(feature = "gpu")]
+    if config.gpu_enabled() {
+        let devices = eth_vanity::worker::gpu::list_devices();
+        if devices.is_empty() {
+            println!("GPU:        Enabled (no devices found, will fallback to CPU)");
+        } else {
+            println!(
+                "GPU:        Enabled (device {}: {})",
+                config.gpu_device_index(),
+                devices.get(config.gpu_device_index()).unwrap_or(&"Unknown".into())
+            );
+            println!("GPU Work:   {} keys/batch", config.gpu_work_size());
+        }
+    }
+
     println!("Target:     {} address(es)", config.count);
     println!();
 
     // Create worker pool
+    #[cfg(feature = "gpu")]
+    let pool = WorkerPool::new_with_gpu(
+        config.worker_count(),
+        pattern,
+        config.gpu_enabled(),
+        config.gpu_device_index(),
+        config.gpu_work_size(),
+    );
+
+    #[cfg(not(feature = "gpu"))]
     let pool = WorkerPool::new(config.worker_count(), pattern);
 
     // Set up ctrl-c handler

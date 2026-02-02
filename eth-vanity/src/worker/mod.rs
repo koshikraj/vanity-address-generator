@@ -2,15 +2,16 @@
 //!
 //! This module provides:
 //! - Multi-threaded CPU workers
+//! - GPU workers (OpenCL, behind `gpu` feature flag)
 //! - Coordinated work distribution
 //! - Progress tracking and reporting
-//!
-//! ## Future Extensions
-//! - GPU workers (OpenCL/CUDA)
-//! - Distributed workers (network)
 
 mod cpu;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 mod pool;
 
 pub use cpu::CpuWorker;
+#[cfg(feature = "gpu")]
+pub use gpu::GpuWorker;
 pub use pool::{VanityResult, WorkerPool};

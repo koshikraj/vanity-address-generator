@@ -9,6 +9,8 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 
 use crate::matcher::Pattern;
 
+#[cfg(feature = "gpu")]
+use super::gpu::GpuWorker;
 use super::cpu::{CpuWorker, WorkerStats};
 
 /// Result of a successful vanity address generation.
@@ -57,6 +59,82 @@ impl WorkerPool {
 
         Self {
             num_workers,
+            pattern,
+            handles: Some(handles),
+            result_rx,
+            stop_flag,
+            stats,
+            start_time: Instant::now(),
+        }
+    }
+
+    /// Creates a new worker pool with optional GPU acceleration.
+    #[cfg(feature = "gpu")]
+    pub fn new_with_gpu(
+        num_cpu_workers: usize,
+        pattern: Pattern,
+        enable_gpu: bool,
+        gpu_device: usize,
+        gpu_work_size: usize,
+    ) -> Self {
+        let (result_tx, result_rx) = bounded(100);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(WorkerStats::new());
+
+        let mut handles = Self::spawn_workers(
+            num_cpu_workers,
+            pattern.clone(),
+            result_tx.clone(),
+            stop_flag.clone(),
+            stats.clone(),
+        );
+
+        let mut gpu_active = false;
+
+        if enable_gpu {
+            let gpu_pattern = pattern.clone();
+            let gpu_tx = result_tx.clone();
+            let gpu_stop = stop_flag.clone();
+            let gpu_stats = stats.clone();
+            let gpu_id = num_cpu_workers; // GPU worker gets next ID
+
+            match GpuWorker::new(
+                gpu_id,
+                gpu_pattern.clone(),
+                gpu_tx.clone(),
+                gpu_stop.clone(),
+                gpu_stats.clone(),
+                gpu_device,
+                gpu_work_size,
+            ) {
+                Ok(gpu_worker) => {
+                    let handle = thread::Builder::new()
+                        .name("vanity-gpu-worker".into())
+                        .spawn(move || {
+                            gpu_worker.run();
+                        })
+                        .expect("Failed to spawn GPU worker thread");
+                    handles.push(handle);
+                    gpu_active = true;
+                }
+                Err(e) => {
+                    eprintln!("Warning: GPU initialization failed: {}", e);
+                    eprintln!("Continuing with CPU-only workers.");
+                }
+            }
+        }
+
+        // Drop the extra sender clone so the channel closes when all workers finish
+        drop(result_tx);
+
+        let total_workers = if gpu_active {
+            num_cpu_workers + 1
+        } else {
+            num_cpu_workers
+        };
+
+        Self {
+            num_workers: total_workers,
             pattern,
             handles: Some(handles),
             result_rx,

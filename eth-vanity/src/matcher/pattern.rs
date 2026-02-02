@@ -14,6 +14,8 @@ pub enum PatternType {
     Suffix,
     /// Match anywhere in the address
     Contains,
+    /// Match both prefix and suffix
+    PrefixAndSuffix,
 }
 
 impl FromStr for PatternType {
@@ -24,6 +26,7 @@ impl FromStr for PatternType {
             "prefix" | "start" | "begin" => Ok(PatternType::Prefix),
             "suffix" | "end" => Ok(PatternType::Suffix),
             "contains" | "anywhere" | "any" => Ok(PatternType::Contains),
+            "prefixandsuffix" | "both" => Ok(PatternType::PrefixAndSuffix),
             _ => Err(format!("Unknown pattern type: {}", s)),
         }
     }
@@ -35,6 +38,7 @@ impl std::fmt::Display for PatternType {
             PatternType::Prefix => write!(f, "prefix"),
             PatternType::Suffix => write!(f, "suffix"),
             PatternType::Contains => write!(f, "contains"),
+            PatternType::PrefixAndSuffix => write!(f, "prefix+suffix"),
         }
     }
 }
@@ -60,6 +64,8 @@ impl MatchResult {
 pub struct Pattern {
     /// The pattern string (normalized)
     pattern: String,
+    /// Optional suffix pattern for PrefixAndSuffix mode
+    suffix: Option<String>,
     /// The pattern type
     pattern_type: PatternType,
     /// Whether matching is case sensitive
@@ -78,7 +84,24 @@ impl Pattern {
 
         Self {
             pattern,
+            suffix: None,
             pattern_type,
+            case_sensitive,
+        }
+    }
+
+    /// Creates a new prefix+suffix pattern.
+    pub fn new_prefix_and_suffix(
+        prefix: impl Into<String>,
+        suffix: impl Into<String>,
+        case_sensitive: bool,
+    ) -> Self {
+        let normalize = |s: String| if case_sensitive { s } else { s.to_lowercase() };
+
+        Self {
+            pattern: normalize(prefix.into()),
+            suffix: Some(normalize(suffix.into())),
+            pattern_type: PatternType::PrefixAndSuffix,
             case_sensitive,
         }
     }
@@ -86,6 +109,11 @@ impl Pattern {
     /// Returns the pattern string.
     pub fn pattern(&self) -> &str {
         &self.pattern
+    }
+
+    /// Returns the suffix pattern, if any.
+    pub fn suffix(&self) -> Option<&str> {
+        self.suffix.as_deref()
     }
 
     /// Returns the pattern type.
@@ -106,6 +134,10 @@ impl Pattern {
             PatternType::Prefix => addr_hex.starts_with(&self.pattern),
             PatternType::Suffix => addr_hex.ends_with(&self.pattern),
             PatternType::Contains => addr_hex.contains(&self.pattern),
+            PatternType::PrefixAndSuffix => {
+                let suffix = self.suffix.as_deref().unwrap_or("");
+                addr_hex.starts_with(&self.pattern) && addr_hex.ends_with(suffix)
+            }
         };
 
         if matched {
@@ -121,8 +153,8 @@ impl Pattern {
     /// - Each character has 16 possible values
     /// - Expected attempts = 16^n where n is pattern length
     pub fn estimated_difficulty(&self) -> u64 {
-        let len = self.pattern.len() as u32;
-        16u64.saturating_pow(len)
+        let total_len = self.pattern.len() + self.suffix.as_ref().map_or(0, |s| s.len());
+        16u64.saturating_pow(total_len as u32)
     }
 
     /// Returns a human-readable difficulty estimate.

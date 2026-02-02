@@ -18,3 +18,6 @@ pub use config::Config;
 pub use crypto::{Address, Keypair};
 pub use matcher::{MatchResult, Pattern, PatternType};
 pub use worker::{VanityResult, WorkerPool};
+
+#[cfg(feature = "gpu")]
+pub use worker::gpu::{GpuError, GpuWorker};
