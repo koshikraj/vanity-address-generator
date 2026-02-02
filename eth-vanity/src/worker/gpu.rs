@@ -106,6 +106,8 @@ pub struct GpuWorker {
     kernel: Kernel,
     /// Work size (number of keys per batch)
     work_size: usize,
+    /// Number of keys processed per work item
+    keys_per_thread: u32,
     /// Precomputed G table (32 entries of 2^k * G, each 64 bytes)
     g_table: Vec<u8>,
 }
@@ -145,15 +147,33 @@ impl GpuWorker {
             CommandQueue::create_default_with_properties(&context, CL_QUEUE_PROFILING_ENABLE, 0)
                 .map_err(|e| GpuError::InitFailed(e.to_string()))?;
 
-        // Compile kernel
-        let program = Program::create_and_build_from_source(&context, KERNEL_SOURCE, "")
+        // Compile kernel (NVIDIA's OpenCL compiler can be slow with complex math kernels)
+        eprintln!("GPU Worker {}: Compiling OpenCL kernel...", id);
+        let program = Program::create_and_build_from_source(&context, KERNEL_SOURCE, "-cl-mad-enable")
             .map_err(|e| GpuError::KernelCompile(e.to_string()))?;
+        eprintln!("GPU Worker {}: Kernel compiled successfully", id);
 
         let kernel = Kernel::create(&program, "vanity_iterate_and_match")
             .map_err(|e| GpuError::KernelCompile(e.to_string()))?;
 
         // Precompute G table: 2^0 * G, 2^1 * G, ..., 2^31 * G
         let g_table = Self::compute_g_table();
+
+        // Choose how many keys each GPU work item should process.
+        // This amortizes the cost of scalar multiplication over many keys.
+        let keys_per_thread: u32 = 256;
+
+        // Ensure work_size is a multiple of keys_per_thread to avoid dropping keys.
+        let adjusted_work_size = if work_size % keys_per_thread as usize == 0 {
+            work_size
+        } else {
+            let aligned = (work_size / keys_per_thread as usize) * keys_per_thread as usize;
+            eprintln!(
+                "GPU Worker {}: Adjusting GPU work size from {} to {} to align with keys_per_thread={}",
+                id, work_size, aligned, keys_per_thread
+            );
+            aligned.max(keys_per_thread as usize)
+        };
 
         Ok(Self {
             id,
@@ -164,7 +184,8 @@ impl GpuWorker {
             context,
             queue,
             kernel,
-            work_size,
+            work_size: adjusted_work_size,
+            keys_per_thread,
             g_table,
         })
     }
@@ -432,6 +453,9 @@ impl GpuWorker {
         let batch_offset: u32 = 0;
         let max_results: u32 = MAX_RESULTS_PER_BATCH;
 
+        // Global work size is in work-items, each processing `keys_per_thread` keys.
+        let threads = self.work_size / self.keys_per_thread as usize;
+
         let kernel_event = unsafe {
             ExecuteKernel::new(&self.kernel)
                 .set_arg(&base_pubkey_buf)
@@ -441,7 +465,8 @@ impl GpuWorker {
                 .set_arg(&mut result_count_buf)
                 .set_arg(&max_results)
                 .set_arg(&batch_offset)
-                .set_global_work_size(self.work_size)
+                .set_arg(&self.keys_per_thread)
+                .set_global_work_size(threads)
                 .enqueue_nd_range(&self.queue)
                 .map_err(|e| GpuError::KernelExec(e.to_string()))?
         };

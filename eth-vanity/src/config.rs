@@ -47,7 +47,7 @@ pub struct Config {
 
     /// GPU work size (number of keys per batch)
     #[cfg(feature = "gpu")]
-    #[arg(long, default_value = "1048576")]
+    #[arg(long, default_value = "65536")]
     pub gpu_work_size: usize,
 }
 
