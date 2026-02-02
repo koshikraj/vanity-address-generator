@@ -343,6 +343,193 @@ static void ec_add(ec_point_t *r, const ec_point_t *p, const ec_point_t *q) {
 }
 
 // ---------------------------------------------------------------------------
+// Jacobian coordinates: (X, Y, Z) represents affine (X/Z^2, Y/Z^3)
+// All EC ops in Jacobian avoid field inversion; one inversion only at end.
+// ---------------------------------------------------------------------------
+typedef struct {
+    uint256_t X;
+    uint256_t Y;
+    uint256_t Z;
+    bool infinity;
+} jac_point_t;
+
+static const uint256_t ONE = {{1,0,0,0,0,0,0,0}};
+
+// Jacobian doubling: R = 2*P (secp256k1: a=0, b=7)
+static void jacobian_double(jac_point_t *r, const jac_point_t *p) {
+    if (p->infinity) { *r = *p; return; }
+
+    uint256_t zero = {{0,0,0,0,0,0,0,0}};
+    if (uint256_eq(&p->Y, &zero)) {
+        r->infinity = true;
+        r->Z = zero;
+        return;
+    }
+
+    uint256_t S, M, M2, X3, Y3, Z3, Y2, X_sq, Y4, two_Y_Z;
+    fp_sqr(&Y2, &p->Y);
+    fp_mul(&S, &p->X, &Y2);
+    fp_add(&S, &S, &S);
+    fp_add(&S, &S, &S);           // S = 4*X*Y^2
+
+    fp_sqr(&X_sq, &p->X);
+    fp_add(&M, &X_sq, &X_sq);
+    fp_add(&M, &M, &X_sq);        // M = 3*X^2 (a=0)
+
+    fp_sqr(&M2, &M);
+    fp_sub(&X3, &M2, &S);
+    fp_sub(&X3, &X3, &S);         // X3 = M^2 - 2*S
+
+    fp_sqr(&Y4, &Y2);
+    fp_add(&Y4, &Y4, &Y4);
+    fp_add(&Y4, &Y4, &Y4);        // 8*Y^4
+    fp_sub(&Y3, &S, &X3);
+    fp_mul(&Y3, &M, &Y3);
+    fp_sub(&Y3, &Y3, &Y4);        // Y3 = M*(S - X3) - 8*Y^4
+
+    fp_mul(&two_Y_Z, &p->Y, &p->Z);
+    fp_add(&Z3, &two_Y_Z, &two_Y_Z); // Z3 = 2*Y*Z
+
+    r->X = X3;
+    r->Y = Y3;
+    r->Z = Z3;
+    r->infinity = false;
+}
+
+// Jacobian addition: R = P + Q (both in Jacobian)
+static void jacobian_add(jac_point_t *r, const jac_point_t *p, const jac_point_t *q) {
+    if (p->infinity) { *r = *q; return; }
+    if (q->infinity) { *r = *p; return; }
+
+    uint256_t Z1_sq, Z2_sq, Z1_cub, Z2_cub;
+    fp_sqr(&Z1_sq, &p->Z);
+    fp_sqr(&Z2_sq, &q->Z);
+    fp_mul(&Z1_cub, &Z1_sq, &p->Z);
+    fp_mul(&Z2_cub, &Z2_sq, &q->Z);
+
+    uint256_t U1, U2, S1, S2;
+    fp_mul(&U1, &p->X, &Z2_sq);
+    fp_mul(&U2, &q->X, &Z1_sq);
+    fp_mul(&S1, &p->Y, &Z2_cub);
+    fp_mul(&S2, &q->Y, &Z1_cub);
+
+    if (uint256_eq(&U1, &U2)) {
+        if (uint256_eq(&S1, &S2)) {
+            jacobian_double(r, p);
+            return;
+        }
+        r->infinity = true;
+        r->Z = (uint256_t){{0,0,0,0,0,0,0,0}};
+        return;
+    }
+
+    uint256_t H, R_val;
+    fp_sub(&H, &U2, &U1);
+    fp_sub(&R_val, &S2, &S1);
+
+    uint256_t H_sq, H_cub, U1_H_sq, S1_H_cub;
+    fp_sqr(&H_sq, &H);
+    fp_mul(&H_cub, &H_sq, &H);
+    fp_mul(&U1_H_sq, &U1, &H_sq);
+    fp_mul(&S1_H_cub, &S1, &H_cub);
+
+    uint256_t R_sq, two_U1_H_sq;
+    fp_sqr(&R_sq, &R_val);
+    fp_add(&two_U1_H_sq, &U1_H_sq, &U1_H_sq);
+
+    fp_sub(&r->X, &R_sq, &H_cub);
+    fp_sub(&r->X, &r->X, &two_U1_H_sq);
+
+    fp_sub(&r->Y, &U1_H_sq, &r->X);
+    fp_mul(&r->Y, &R_val, &r->Y);
+    fp_sub(&r->Y, &r->Y, &S1_H_cub);
+
+    fp_mul(&r->Z, &p->Z, &q->Z);
+    fp_mul(&r->Z, &r->Z, &H);
+
+    r->infinity = false;
+}
+
+// Mixed addition: R = P_affine + Q_jacobian (no inversion)
+static void mixed_add_jacobian(jac_point_t *r, const ec_point_t *p_affine, const jac_point_t *q) {
+    if (p_affine->infinity) { *r = *q; return; }
+    if (q->infinity) {
+        r->X = p_affine->x;
+        r->Y = p_affine->y;
+        r->Z = ONE;
+        r->infinity = false;
+        return;
+    }
+
+    uint256_t Z2_sq, Z2_cub;
+    fp_sqr(&Z2_sq, &q->Z);
+    fp_mul(&Z2_cub, &Z2_sq, &q->Z);
+
+    uint256_t U1, U2, S1, S2;
+    fp_mul(&U1, &p_affine->x, &Z2_sq);
+    U2 = q->X;
+    fp_mul(&S1, &p_affine->y, &Z2_cub);
+    S2 = q->Y;
+
+    if (uint256_eq(&U1, &U2)) {
+        if (uint256_eq(&S1, &S2)) {
+            jac_point_t p_jac;
+            p_jac.X = p_affine->x;
+            p_jac.Y = p_affine->y;
+            p_jac.Z = ONE;
+            p_jac.infinity = false;
+            jacobian_double(r, &p_jac);
+            return;
+        }
+        r->infinity = true;
+        r->Z = (uint256_t){{0,0,0,0,0,0,0,0}};
+        return;
+    }
+
+    uint256_t H, R_val;
+    fp_sub(&H, &U2, &U1);
+    fp_sub(&R_val, &S2, &S1);
+
+    uint256_t H_sq, H_cub, U1_H_sq, S1_H_cub;
+    fp_sqr(&H_sq, &H);
+    fp_mul(&H_cub, &H_sq, &H);
+    fp_mul(&U1_H_sq, &U1, &H_sq);
+    fp_mul(&S1_H_cub, &S1, &H_cub);
+
+    uint256_t R_sq, two_U1_H_sq;
+    fp_sqr(&R_sq, &R_val);
+    fp_add(&two_U1_H_sq, &U1_H_sq, &U1_H_sq);
+
+    fp_sub(&r->X, &R_sq, &H_cub);
+    fp_sub(&r->X, &r->X, &two_U1_H_sq);
+
+    fp_sub(&r->Y, &U1_H_sq, &r->X);
+    fp_mul(&r->Y, &R_val, &r->Y);
+    fp_sub(&r->Y, &r->Y, &S1_H_cub);
+
+    fp_mul(&r->Z, &q->Z, &H);
+    r->infinity = false;
+}
+
+// Convert Jacobian to affine: (X,Y,Z) -> (x,y) = (X/Z^2, Y/Z^3). One inversion only.
+static void jacobian_to_affine(ec_point_t *r, const jac_point_t *p) {
+    uint256_t zero = {{0,0,0,0,0,0,0,0}};
+    if (p->infinity || uint256_eq(&p->Z, &zero)) {
+        r->infinity = true;
+        return;
+    }
+
+    uint256_t inv_Z, inv_Z2, inv_Z3;
+    fp_inv(&inv_Z, &p->Z);
+    fp_sqr(&inv_Z2, &inv_Z);
+    fp_mul(&inv_Z3, &inv_Z2, &inv_Z);
+
+    fp_mul(&r->x, &p->X, &inv_Z2);
+    fp_mul(&r->y, &p->Y, &inv_Z3);
+    r->infinity = false;
+}
+
+// ---------------------------------------------------------------------------
 // Precomputed table of i*G for i = 0..255 is passed as a buffer
 // Format: 256 entries of (x, y) as 64 bytes each (big-endian)
 //
@@ -377,18 +564,24 @@ static ec_point_t load_g_table_entry(__global const uchar *table, int index) {
     return pt;
 }
 
-// Compute offset * G using precomputed table of 2^k * G
-static ec_point_t scalar_mul_g(uint offset, __global const uchar *g_table) {
-    ec_point_t result;
+// Compute offset * G in Jacobian using precomputed 2^k * G (no field inversion).
+static jac_point_t scalar_mul_g_jacobian(uint offset, __global const uchar *g_table) {
+    jac_point_t result;
     result.infinity = true;
-    result.x = (uint256_t){{0,0,0,0,0,0,0,0}};
-    result.y = (uint256_t){{0,0,0,0,0,0,0,0}};
+    result.X = (uint256_t){{0,0,0,0,0,0,0,0}};
+    result.Y = (uint256_t){{0,0,0,0,0,0,0,0}};
+    result.Z = (uint256_t){{0,0,0,0,0,0,0,0}};
 
     for (int bit = 0; bit < 32; bit++) {
         if (offset & (1u << bit)) {
-            ec_point_t g_pow = load_g_table_entry(g_table, bit);
-            ec_point_t tmp;
-            ec_add(&tmp, &result, &g_pow);
+            ec_point_t g_affine = load_g_table_entry(g_table, bit);
+            jac_point_t g_jac;
+            g_jac.X = g_affine.x;
+            g_jac.Y = g_affine.y;
+            g_jac.Z = ONE;
+            g_jac.infinity = false;
+            jac_point_t tmp;
+            jacobian_add(&tmp, &result, &g_jac);
             result = tmp;
         }
     }
@@ -615,18 +808,21 @@ __kernel void vanity_iterate_and_match(
     // Skip offset 0 (that's just the base key itself, already checked by CPU if needed)
     if (offset == 0) return;
 
-    // Load base public key
+    // Load base public key (affine)
     ec_point_t base_pt;
     base_pt.x = load_uint256_be(base_pubkey);
     base_pt.y = load_uint256_be(base_pubkey + 32);
     base_pt.infinity = false;
 
-    // Compute offset * G
-    ec_point_t offset_g = scalar_mul_g(offset, g_table);
+    // Compute offset * G in Jacobian (no inversion)
+    jac_point_t offset_g_jac = scalar_mul_g_jacobian(offset, g_table);
 
-    // Compute Q = base_pt + offset * G
+    // Base + offset*G in Jacobian (no inversion), then single conversion to affine
+    jac_point_t sum_jac;
+    mixed_add_jacobian(&sum_jac, &base_pt, &offset_g_jac);
+
     ec_point_t q;
-    ec_add(&q, &base_pt, &offset_g);
+    jacobian_to_affine(&q, &sum_jac);
 
     if (q.infinity) return;
 
