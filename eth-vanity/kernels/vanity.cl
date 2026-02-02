@@ -603,77 +603,56 @@ typedef struct {
 __kernel void vanity_iterate_and_match(
     __global const uchar *base_pubkey,        // 64 bytes: base public key (x || y) big-endian
     __global const uchar *g_table,            // 32 * 64 bytes: precomputed 2^k * G table
-    __global const gpu_pattern_config_t *cfg, // pattern configuration
+    __global const gpu_pattern_config_t *cfg,  // pattern configuration
     __global gpu_result_t *results,           // result buffer (max_results entries)
     __global volatile uint *result_count,     // atomic counter for results
     const uint max_results,                   // max result slots
-    const uint batch_offset,                  // added to starting offset
-    const uint keys_per_thread                // number of keys each work item processes
-) {
+    const uint batch_offset                   // added to global_id for offset
+    ) {
     uint gid = get_global_id(0);
+    uint offset = gid + batch_offset;
 
-    // Starting offset for this work item
-    uint base_offset = batch_offset + gid * keys_per_thread;
+    // Skip offset 0 (that's just the base key itself, already checked by CPU if needed)
+    if (offset == 0) return;
 
-    // Load base public key once
+    // Load base public key
     ec_point_t base_pt;
     base_pt.x = load_uint256_be(base_pubkey);
     base_pt.y = load_uint256_be(base_pubkey + 32);
     base_pt.infinity = false;
 
-    // Preload G = 2^0 * G from the table for incremental stepping
-    ec_point_t g1 = load_g_table_entry(g_table, 0);
+    // Compute offset * G
+    ec_point_t offset_g = scalar_mul_g(offset, g_table);
 
-    // Compute base_offset * G (expensive) once per work item
-    ec_point_t offset_g = scalar_mul_g(base_offset, g_table);
-
-    // Compute initial Q = base_pt + base_offset * G
+    // Compute Q = base_pt + offset * G
     ec_point_t q;
     ec_add(&q, &base_pt, &offset_g);
 
-    // If we hit infinity here, further additions are undefined; just bail out
     if (q.infinity) return;
 
+    // Serialize public key
     uchar pubkey[64];
+    point_to_pubkey(&q, pubkey);
+
+    // Keccak-256 hash
     uchar hash[32];
+    keccak256_64bytes(pubkey, hash);
+
+    // Address = last 20 bytes of hash
     uchar addr[20];
+    for (int i = 0; i < 20; i++) {
+        addr[i] = hash[i + 12];
+    }
 
-    uint offset = base_offset;
-
-    for (uint i = 0; i < keys_per_thread; i++, offset++) {
-        // Skip offset 0 (that's just the base key itself, already checked by CPU if needed)
-        if (offset != 0) {
-            // Serialize current public key
-            point_to_pubkey(&q, pubkey);
-
-            // Keccak-256 hash
-            keccak256_64bytes(pubkey, hash);
-
-            // Address = last 20 bytes of hash
-            for (int j = 0; j < 20; j++) {
-                addr[j] = hash[j + 12];
-            }
-
-            // Pattern match
-            if (pattern_matches(addr, cfg)) {
-                uint idx = atomic_inc(result_count);
-                if (idx < max_results) {
-                    results[idx].found = 1;
-                    results[idx].offset = offset;
-                    for (int j = 0; j < 20; j++) {
-                        results[idx].addr[j] = addr[j];
-                    }
-                }
+    // Pattern match
+    if (pattern_matches(addr, cfg)) {
+        uint idx = atomic_inc(result_count);
+        if (idx < max_results) {
+            results[idx].found = 1;
+            results[idx].offset = offset;
+            for (int i = 0; i < 20; i++) {
+                results[idx].addr[i] = addr[i];
             }
         }
-
-        // Step to next point: Q = Q + G
-        ec_point_t q_next;
-        ec_add(&q_next, &q, &g1);
-        if (q_next.infinity) {
-            // We've wrapped to point at infinity; further points are invalid
-            return;
-        }
-        q = q_next;
     }
 }
