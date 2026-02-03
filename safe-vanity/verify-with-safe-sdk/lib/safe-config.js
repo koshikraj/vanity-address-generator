@@ -35,7 +35,8 @@ export const DEFAULT_CONFIG = {
   caseSensitive: false,
 };
 
-const SAFE_SETUP_ABI = [
+/** Safe.setup calldata ABI — export for deploy lib and REST API. */
+export const SAFE_SETUP_ABI = [
   {
     inputs: [
       { name: '_owners', type: 'address[]' },
@@ -206,4 +207,34 @@ export function toChecksumAddress(addressBytes) {
     out += nibble >= 8 ? c.toUpperCase() : c;
   }
   return out;
+}
+
+/**
+ * Predict Safe address for given owners, threshold, saltNonce and config.
+ * Reusable for REST API: returns address and nonce so caller can store and deploy later.
+ *
+ * @param {string[]} owners - Owner addresses
+ * @param {number} threshold - Required signatures
+ * @param {string|bigint} saltNonce - Salt nonce (decimal string or bigint)
+ * @param {object} config - Chain config (chainId, rpcUrl, useL2, safeVersion, etc.)
+ * @returns {Promise<{ address: string, saltNonce: string, saltNonceHex: string, safeConfig: object }>}
+ */
+export async function predictSafeAddress(owners, threshold, saltNonce, config) {
+  const safeConfig = await fetchSafeConfig(owners, threshold, config);
+  const saltNonceStr = typeof saltNonce === 'bigint' ? saltNonce.toString() : String(saltNonce);
+  const saltNonceBytes = saltNonceDecimalToBytes(saltNonceStr);
+  const addressBytes = computeCreate2Address(
+    safeConfig.factory,
+    safeConfig.initCodeHash,
+    safeConfig.initializerHash,
+    saltNonceBytes
+  );
+  const addressChecksum = toChecksumAddress(addressBytes);
+  const saltNonceHex = BigInt(saltNonceStr).toString(16).padStart(64, '0');
+  return {
+    address: addressChecksum,
+    saltNonce: saltNonceStr,
+    saltNonceHex: '0x' + saltNonceHex,
+    safeConfig,
+  };
 }

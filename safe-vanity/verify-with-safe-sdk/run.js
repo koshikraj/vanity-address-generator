@@ -1,25 +1,27 @@
 #!/usr/bin/env node
 /**
- * Single-flow Safe vanity: config → fetch Safe params → mine → verify.
+ * Single-flow Safe vanity: config → fetch → mine → verify → [deploy with confirmation].
  *
- * Only required args: --owners, --threshold, --pattern.
- * Everything else (chain, RPC, L2, Safe version, etc.) comes from safe-vanity.config.json.
+ * Required: --owners, --threshold, --pattern.
+ * Add --deploy to deploy after mining; you will be prompted for confirmation and need --private-key or SAFE_DEPLOYER_PRIVATE_KEY.
+ * Standalone deploy.js remains for deploying with an existing nonce (e.g. from API).
  *
  * Usage:
  *   node run.js --owners 0x...,0x... --threshold 1 --pattern dead
- *   node run.js --owners 0x... --threshold 1 -p dead -s beef     # prefix dead + suffix beef
- *   node run.js --owners 0x... --threshold 1 -p cafe -t suffix   # suffix only
- *   node run.js --owners 0x... --threshold 1 -p cafe -c          # case-sensitive
+ *   node run.js --owners 0x... --threshold 1 -p dead --deploy --private-key <hex>
+ *   node run.js --owners 0x... -p dead -s beef --deploy   # private key from .env or SAFE_DEPLOYER_PRIVATE_KEY
  *
- * Pattern options (same as Rust safe_vanity): -s/--suffix, -t/--pattern-type (prefix|suffix|contains), -c/--case-sensitive.
- * Config file: chainId, rpcUrl, useL2, safeVersion, fallbackHandler, minerPath, workers, count, reportInterval, suffix, patternType, caseSensitive.
+ * Pattern options: -s/--suffix, -t/--pattern-type (prefix|suffix|contains), -c/--case-sensitive.
  */
 
+import 'dotenv/config';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { loadConfig, fetchSafeConfig, computeCreate2Address, toChecksumAddress, saltNonceDecimalToBytes } from './lib/safe-config.js';
+import * as readline from 'readline';
+import { loadConfig, fetchSafeConfig, predictSafeAddress, computeCreate2Address, toChecksumAddress, saltNonceDecimalToBytes } from './lib/safe-config.js';
+import { deploySafe } from './lib/deploy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SAFE_VANITY_ROOT = join(__dirname, '..');
@@ -59,6 +61,8 @@ function parseArgs() {
     workers: null,
     count: null,
     reportInterval: null,
+    deploy: false,
+    privateKey: null,
   };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--owners' && args[i + 1]) out.owners = args[++i];
@@ -77,6 +81,8 @@ function parseArgs() {
     else if ((args[i] === '--workers' || args[i] === '-w') && args[i + 1]) out.workers = args[++i];
     else if ((args[i] === '--count' || args[i] === '-n') && args[i + 1]) out.count = args[++i];
     else if ((args[i] === '--report-interval' || args[i] === '-r') && args[i + 1]) out.reportInterval = args[++i];
+    else if (args[i] === '--deploy') out.deploy = true;
+    else if (args[i] === '--private-key' && args[i + 1]) out.privateKey = args[++i];
   }
   return out;
 }
@@ -95,11 +101,9 @@ function mergeConfig(fileConfig, cli) {
   if (cli.suffix != null) c.suffix = cli.suffix;
   if (cli.patternType != null) c.patternType = cli.patternType;
   if (cli.caseSensitive != null) c.caseSensitive = cli.caseSensitive;
+  if (cli.deploy != null) c.deploy = cli.deploy;
+  if (cli.privateKey != null) c.privateKey = cli.privateKey;
   return c;
-}
-
-function ensure0x(hex) {
-  return hex.startsWith('0x') ? hex : '0x' + hex;
 }
 
 async function main() {
@@ -125,6 +129,13 @@ async function main() {
     console.error('  --miner-path <bin>  Path to safe_vanity binary');
     console.error('  -w, --workers <n>   Worker threads');
     console.error('  -n, --count <n>      Stop after N matches (default 1)');
+    console.error('  --deploy             Deploy Safe after mining (confirmation prompt)');
+    console.error('  --private-key <hex>  Deployer key (or set SAFE_DEPLOYER_PRIVATE_KEY)');
+    process.exit(1);
+  }
+
+  if (cli.deploy && !cli.privateKey && !process.env.SAFE_DEPLOYER_PRIVATE_KEY) {
+    console.error('Error: --deploy requires --private-key or SAFE_DEPLOYER_PRIVATE_KEY');
     process.exit(1);
   }
 
@@ -215,37 +226,72 @@ async function main() {
   });
 
   if (lastAddress != null && lastSaltDec != null) {
-    const saltBytes = saltNonceDecimalToBytes(lastSaltDec);
-    const computed = computeCreate2Address(
-      safeConfig.factory,
-      safeConfig.initCodeHash,
-      safeConfig.initializerHash,
-      saltBytes
-    );
-    const computedChecksum = toChecksumAddress(computed);
-    const match = computedChecksum.toLowerCase() === lastAddress.toLowerCase();
+    const prediction = await predictSafeAddress(owners, threshold, lastSaltDec, config);
+    const match = prediction.address.toLowerCase() === lastAddress.toLowerCase();
 
     console.log('');
     console.log('--- Verification ---');
     console.log('Miner address: ', lastAddress);
-    console.log('Formula check: ', computedChecksum, match ? '(match)' : '(MISMATCH)');
+    console.log('Predicted:     ', prediction.address, match ? '(match)' : '(MISMATCH)');
+    console.log('Salt nonce:    ', prediction.saltNonce, '(hex:', prediction.saltNonceHex + ')');
     if (!match) {
       console.error('Formula verification failed.');
       process.exit(1);
     }
-    console.log('');
-    console.log('--- Deploy (same config) ---');
-    console.log(
-      'node deploy.js --chain-id', safeConfig.chainId,
-      '--owners', owners.join(','),
-      '--threshold', threshold,
-      '--salt-nonce', lastSaltDec,
-      '--rpc-url', safeConfig.rpcUrl,
-      config.useL2 ? '--l2' : '',
-      '--deploy --private-key <KEY>'
-    );
-    console.log('');
+
+    if (config.deploy) {
+      const privateKey = cli.privateKey || process.env.SAFE_DEPLOYER_PRIVATE_KEY;
+      console.log('');
+      console.log('--- Deploy confirmation ---');
+      console.log('Chain ID:      ', prediction.safeConfig.chainId);
+      console.log('Safe address:  ', prediction.address);
+      console.log('Salt nonce:    ', prediction.saltNonce);
+      console.log('Factory:       ', prediction.safeConfig.factory);
+      console.log('Singleton:     ', prediction.safeConfig.singletonAddress);
+      console.log('');
+      const confirmed = await confirm('Deploy this Safe? (y/N) ');
+      if (!confirmed) {
+        console.log('Deploy cancelled.');
+        console.log('');
+        console.log('To deploy later: node deploy.js --owners', cli.owners, '--threshold', threshold, '--salt-nonce', prediction.saltNonce, '--deploy --private-key <KEY>');
+        return;
+      }
+      console.log('Deploying...');
+      try {
+        const result = await deploySafe(owners, threshold, prediction.saltNonce, privateKey, config);
+        console.log('Transaction hash:', result.txHash);
+        console.log('Confirmed in block:', result.receipt.blockNumber.toString());
+        console.log('Safe deployed at:', result.address);
+      } catch (err) {
+        console.error('Deploy failed:', err.message);
+        process.exit(1);
+      }
+    } else {
+      console.log('');
+      console.log('--- Deploy later (same config) ---');
+      console.log(
+        'node deploy.js --chain-id', prediction.safeConfig.chainId,
+        '--owners', owners.join(','),
+        '--threshold', threshold,
+        '--salt-nonce', prediction.saltNonce,
+        '--rpc-url', prediction.safeConfig.rpcUrl,
+        config.useL2 ? '--l2' : '',
+        '--deploy --private-key <KEY>'
+      );
+      console.log('');
+    }
   }
+}
+
+function confirm(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const a = (answer || '').trim().toLowerCase();
+      resolve(a === 'y' || a === 'yes');
+    });
+  });
 }
 
 main().catch((err) => {

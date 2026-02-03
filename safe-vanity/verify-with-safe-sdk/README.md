@@ -33,26 +33,27 @@ Defaults live in `safe-vanity.config.json`:
 
 Override via CLI flags or a different config file (`--config <path>`).
 
-## Single flow (mine + verify)
+## Single flow (mine + verify, optional deploy)
 
-Only **owners**, **threshold**, and **pattern** are required. Chain, RPC, L2, Safe version, etc. come from config.
+Only **owners**, **threshold**, and **pattern** are required. Add **--deploy** to deploy after mining; you get a confirmation prompt and need **--private-key** or `SAFE_DEPLOYER_PRIVATE_KEY`.
 
 ```bash
 node run.js --owners "0x...,0x..." --threshold 1 --pattern dead
 ```
 
-This will:
-
-1. Load `safe-vanity.config.json` (or `--config <path>`)
-2. Fetch factory, init_code_hash, initializer_hash for the chain/Safe version
-3. Run `safe_vanity` with that config and your pattern
-4. When the miner finds a match, verify the address with the CREATE2 formula and print the deploy command
-
-Override config from CLI:
+With deploy (confirmation prompt before sending tx):
 
 ```bash
-node run.js --owners "0x..." --threshold 1 -p cafe --chain-id 1 --rpc-url https://... --l2 --safe-version 1.4.1
+node run.js --owners "0x...,0x..." --threshold 1 --pattern dead --deploy --private-key <hex>
+# or: SAFE_DEPLOYER_PRIVATE_KEY=<hex> node run.js ... --deploy
 ```
+
+Flow:
+
+1. Load config, fetch factory/init_code_hash/initializer_hash
+2. Run miner; on match, verify address via `predictSafeAddress` (reusable API)
+3. If **--deploy**: show details and prompt "Deploy this Safe? (y/N)"; on yes, deploy
+4. If not **--deploy**: print the `deploy.js` command so you can deploy later with the same nonce
 
 ## Fetch config only
 
@@ -70,9 +71,9 @@ Cross-check miner output with the CREATE2 formula. Salt-nonce can be **decimal**
 node verify.js --factory <40-hex> --init-code-hash <64-hex> --initializer-hash <64-hex> --salt-nonce <decimal-or-64-hex>
 ```
 
-## Deploy
+## Deploy (standalone)
 
-Deploy a mined Safe. Only **owners**, **threshold**, and **salt-nonce** required; chain/RPC from config.
+Use **deploy.js** when you already have a salt nonce (from miner output or API) and want to deploy without running the miner.
 
 ```bash
 # Dry run (predict address only)
@@ -80,6 +81,23 @@ node deploy.js --owners "0x...,0x..." --threshold 1 --salt-nonce 12345
 
 # Deploy on-chain
 node deploy.js --owners "0x...,0x..." --threshold 1 --salt-nonce 12345 --deploy --private-key <hex>
+```
+
+## Reusable lib (REST API)
+
+For a REST API or scripts, use the lib directly:
+
+```js
+import { loadConfig, predictSafeAddress } from './lib/safe-config.js';
+import { deploySafe } from './lib/deploy.js';
+
+const config = loadConfig();
+const prediction = await predictSafeAddress(owners, threshold, saltNonce, config);
+// prediction.address, prediction.saltNonce, prediction.saltNonceHex, prediction.safeConfig
+
+// Deploy when ready:
+const result = await deploySafe(owners, threshold, saltNonce, privateKey, config);
+// result.txHash, result.receipt, result.address
 ```
 
 ## References
