@@ -1,6 +1,6 @@
-# Safe Vanity - JS Tools
+# Safe Vanity — JS Tools
 
-Fetch config, verify results, and deploy Safes mined by `safe_vanity`.
+Single-flow: config → fetch Safe params → mine → verify. Only **owners**, **threshold**, and **pattern** are required; everything else comes from `safe-vanity.config.json`.
 
 ## Install
 
@@ -8,60 +8,82 @@ Fetch config, verify results, and deploy Safes mined by `safe_vanity`.
 npm install
 ```
 
-## Scripts
-
-### 1. Fetch Config
-
-Resolves factory, init_code_hash, and initializer_hash from `@safe-global/safe-deployments` + on-chain RPC call. Auto-detects the CompatibilityFallbackHandler.
+Build the Rust miner (from `safe-vanity` repo root):
 
 ```bash
-node fetch-config.js \
-  --chain-id 11155111 \
-  --owners "0xOwner1,0xOwner2" \
-  --threshold 1 \
-  --rpc-url https://ethereum-sepolia-rpc.publicnode.com
+cargo build --release
+# optional: cargo install --path .  → puts safe_vanity on PATH
 ```
 
-Options: `--fallback-handler <addr>`, `--l2`, `--safe-version <ver>`
+## Config
 
-### 2. Verify (Formula)
+Defaults live in `safe-vanity.config.json`:
 
-Cross-check safe_vanity output against the CREATE2 formula in JS:
+| Field | Default | Description |
+|-------|---------|-------------|
+| `chainId` | `"11155111"` | Chain ID (Sepolia) |
+| `rpcUrl` | Sepolia RPC | RPC URL for fetch & deploy |
+| `useL2` | `false` | Use SafeL2 singleton |
+| `safeVersion` | `"1.4.1"` | Safe version filter |
+| `fallbackHandler` | `null` | Override or auto-detect |
+| `minerPath` | `"safe_vanity"` | Miner binary (PATH or path) |
+| `workers` | `null` | Miner worker threads |
+| `count` | `1` | Stop after N matches |
+| `reportInterval` | `5` | Progress interval (seconds) |
+
+Override via CLI flags or a different config file (`--config <path>`).
+
+## Single flow (mine + verify)
+
+Only **owners**, **threshold**, and **pattern** are required. Chain, RPC, L2, Safe version, etc. come from config.
 
 ```bash
-node verify.js \
-  --factory <40-hex> \
-  --init-code-hash <64-hex> \
-  --initializer-hash <64-hex> \
-  --salt-nonce <64-hex>
+node run.js --owners "0x...,0x..." --threshold 1 --pattern dead
 ```
 
-### 3. Verify (Safe SDK)
+This will:
 
-Verify against `@safe-global/protocol-kit` prediction:
+1. Load `safe-vanity.config.json` (or `--config <path>`)
+2. Fetch factory, init_code_hash, initializer_hash for the chain/Safe version
+3. Run `safe_vanity` with that config and your pattern
+4. When the miner finds a match, verify the address with the CREATE2 formula and print the deploy command
+
+Override config from CLI:
 
 ```bash
-node verify.js --sdk --rpc-url https://... --owner 0x... --salt-nonce <decimal>
+node run.js --owners "0x..." --threshold 1 -p cafe --chain-id 1 --rpc-url https://... --l2 --safe-version 1.4.1
 ```
 
-### 4. Deploy
+## Fetch config only
 
-Deploy the mined Safe on-chain:
+Print factory, init_code_hash, initializer_hash (and example commands). Only **owners** and **threshold** required; rest from config.
 
 ```bash
-# Dry run (predict only):
-node deploy.js --chain-id 11155111 --owners 0x... --threshold 1 \
-  --salt-nonce <decimal> --rpc-url https://...
+node fetch-config.js --owners "0x...,0x..." --threshold 1
+```
 
-# Actual deployment:
-node deploy.js --chain-id 11155111 --owners 0x... --threshold 1 \
-  --salt-nonce <decimal> --rpc-url https://... \
-  --private-key <hex> --deploy
+## Verify (formula)
+
+Cross-check miner output with the CREATE2 formula. Salt-nonce can be **decimal** (from miner “Salt (dec):”) or 64-char hex.
+
+```bash
+node verify.js --factory <40-hex> --init-code-hash <64-hex> --initializer-hash <64-hex> --salt-nonce <decimal-or-64-hex>
+```
+
+## Deploy
+
+Deploy a mined Safe. Only **owners**, **threshold**, and **salt-nonce** required; chain/RPC from config.
+
+```bash
+# Dry run (predict address only)
+node deploy.js --owners "0x...,0x..." --threshold 1 --salt-nonce 12345
+
+# Deploy on-chain
+node deploy.js --owners "0x...,0x..." --threshold 1 --salt-nonce 12345 --deploy --private-key <hex>
 ```
 
 ## References
 
 - [Safe deployment — predict the Safe address](https://docs.safe.global/sdk/protocol-kit/guides/safe-deployment#predict-the-safe-address)
-- [Protocol Kit init — predictedSafe](https://docs.safe.global/reference-sdk-protocol-kit/initialization/init#predictedsafe-optional)
 - [safe-deployments](https://github.com/safe-global/safe-deployments)
 - [SafeProxyFactory.sol](https://github.com/safe-global/safe-smart-account/blob/main/contracts/proxies/SafeProxyFactory.sol)

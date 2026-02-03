@@ -4,9 +4,9 @@
   "description": "Fetch config, verify, and deploy Safe vanity addresses mined by safe_vanity",
   "type": "module",
   "scripts": {
+    "run": "node run.js",
     "fetch-config": "node fetch-config.js",
     "verify": "node verify.js",
-    "predict": "node verify.js --predict",
     "deploy": "node deploy.js"
   },
   "dependencies": {

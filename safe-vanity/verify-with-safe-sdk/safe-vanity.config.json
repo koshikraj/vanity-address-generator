@@ -1,0 +1,11 @@
+{
+  "chainId": "11155111",
+  "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+  "useL2": true,
+  "safeVersion": "1.4.1",
+  "fallbackHandler": null,
+  "minerPath": "safe_vanity",
+  "workers": null,
+  "count": 1,
+  "reportInterval": 5
+}

@@ -3,22 +3,13 @@
  * Verify safe_vanity output against the CREATE2 formula and optionally the Safe SDK.
  *
  * Mode 1 - Formula only (verify Rust implementation):
- *   node verify.js --factory <20-byte-hex> --init-code-hash <32-byte-hex> \
- *     --initializer-hash <32-byte-hex> --salt-nonce <32-byte-hex>
- *   Computes Safe address with CREATE2 formula and prints it. Compare with safe_vanity output.
+ *   node verify.js --factory <40-hex> --init-code-hash <64-hex> --initializer-hash <64-hex> --salt-nonce <decimal-or-64-hex>
+ *   Salt-nonce: decimal (from miner "Salt (dec):") or 64-char hex. Computes address; compare with miner output.
  *
- * Mode 2 - Safe SDK (verify against actual SDK prediction):
- *   node verify.js --sdk --rpc-url <url> --owner <0x...> --salt-nonce <uint256>
- *   Uses @safe-global/protocol-kit to predict Safe address for the given config.
- *   Compare the printed address with safe_vanity when using the same factory/init_code_hash/initializer_hash.
+ * Mode 2 - Safe SDK: node verify.js --sdk [--rpc-url <url>] [--owner <0x...>] [--salt-nonce <uint256>]
  */
 
-import pkg from 'js-sha3';
-const { keccak256: jsKeccak256 } = pkg;
-
-function strip0x(hex) {
-  return hex.startsWith('0x') ? hex.slice(2) : hex;
-}
+import { strip0x, computeCreate2Address, toChecksumAddress, saltNonceDecimalToBytes } from './lib/safe-config.js';
 
 function hexToBytes(hex) {
   const h = strip0x(hex);
@@ -26,60 +17,35 @@ function hexToBytes(hex) {
   return Buffer.from(h, 'hex');
 }
 
-/**
- * Safe CREATE2 salt: keccak256(initializerHash || saltNonce) — 64 bytes in, 32 bytes out.
- */
-function safeSalt(initializerHashBytes, saltNonceBytes) {
-  const preimage = Buffer.concat([initializerHashBytes, saltNonceBytes]);
-  return Buffer.from(jsKeccak256.arrayBuffer(preimage));
-}
-
-/**
- * Safe proxy address: keccak256(0xff || factory || salt || initCodeHash)[12:32].
- */
-function safeAddress(factoryBytes, initCodeHashBytes, saltBytes) {
-  const preimage = Buffer.concat([
-    Buffer.from([0xff]),
-    factoryBytes,
-    saltBytes,
-    initCodeHashBytes,
-  ]);
-  if (preimage.length !== 85) throw new Error('Preimage must be 85 bytes');
-  const hash = Buffer.from(jsKeccak256.arrayBuffer(preimage));
-  return hash.slice(12, 32);
-}
-
-function toChecksumAddress(addressBytes) {
-  const hex = addressBytes.toString('hex').toLowerCase();
-  const hash = Buffer.from(jsKeccak256.arrayBuffer(Buffer.from(hex, 'utf8')));
-  let out = '0x';
-  for (let i = 0; i < 40; i++) {
-    const byteIndex = i >> 1;
-    const nibble = i % 2 === 0 ? (hash[byteIndex] >> 4) : (hash[byteIndex] & 0x0f);
-    const c = hex[i];
-    out += nibble >= 8 ? c.toUpperCase() : c;
-  }
-  return out;
+/** Parse salt-nonce: 64 hex chars → 32 bytes; else treat as decimal. */
+function saltNonceToBytes(saltNonceStr) {
+  const raw = strip0x(saltNonceStr);
+  if (raw.length === 64 && /^[0-9a-fA-F]+$/.test(raw)) return Buffer.from(raw, 'hex');
+  return saltNonceDecimalToBytes(saltNonceStr);
 }
 
 async function runFormulaMode(args) {
   const factory = hexToBytes(args.factory);
   const initCodeHash = hexToBytes(args.initCodeHash);
   const initializerHash = hexToBytes(args.initializerHash);
-  const saltNonce = hexToBytes(args.saltNonce);
+  const saltNonceBytes = saltNonceToBytes(args.saltNonce);
 
   if (factory.length !== 20) throw new Error('factory must be 20 bytes (40 hex chars)');
   if (initCodeHash.length !== 32) throw new Error('init_code_hash must be 32 bytes');
   if (initializerHash.length !== 32) throw new Error('initializer_hash must be 32 bytes');
-  if (saltNonce.length !== 32) throw new Error('salt_nonce must be 32 bytes (64 hex chars)');
+  if (saltNonceBytes.length !== 32) throw new Error('salt_nonce must be 32 bytes (decimal or 64 hex)');
 
-  const salt = safeSalt(initializerHash, saltNonce);
-  const address = safeAddress(factory, initCodeHash, salt);
+  const address = computeCreate2Address(
+    args.factory,
+    args.initCodeHash,
+    args.initializerHash,
+    saltNonceBytes
+  );
 
   console.log('CREATE2 formula result:');
   console.log('Address:     ', toChecksumAddress(address));
   console.log('Address hex: 0x' + address.toString('hex'));
-  console.log('Salt nonce:  0x' + saltNonce.toString('hex'));
+  console.log('Salt nonce:  ', args.saltNonce);
 }
 
 async function runSdkMode(args) {
@@ -139,7 +105,8 @@ async function main() {
 
   if (!args.factory || !args.initCodeHash || !args.initializerHash || !args.saltNonce) {
     console.error('Formula mode requires: --factory, --init-code-hash, --initializer-hash, --salt-nonce');
-    console.error('Example: node verify.js --factory <40 hex> --init-code-hash <64 hex> --initializer-hash <64 hex> --salt-nonce <64 hex>');
+    console.error('Salt-nonce: decimal (from miner) or 64-char hex.');
+    console.error('Example: node verify.js --factory <40 hex> --init-code-hash <64 hex> --initializer-hash <64 hex> --salt-nonce 12345');
     console.error('');
     console.error('SDK mode: node verify.js --sdk [--rpc-url <url>] [--owner <0x...>] [--salt-nonce <uint256>]');
     process.exit(1);
