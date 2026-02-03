@@ -24,7 +24,7 @@ import { loadConfig, fetchSafeConfig, predictSafeAddress, computeCreate2Address,
 import { deploySafe } from './lib/deploy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SAFE_VANITY_ROOT = join(__dirname, '..');
+const MINER_ROOT = join(__dirname, '..', 'miner');
 
 /** Resolve miner binary: local target/release or target/debug, or use cargo run. Returns { cmd, args, cwd } for spawn. */
 function resolveMiner(minerPath, minerArgs) {
@@ -32,12 +32,12 @@ function resolveMiner(minerPath, minerArgs) {
   if (raw.includes('/') || raw.includes('\\')) {
     return { cmd: raw, args: minerArgs, cwd: undefined };
   }
-  const release = join(SAFE_VANITY_ROOT, 'target', 'release', 'safe_vanity');
-  const debug = join(SAFE_VANITY_ROOT, 'target', 'debug', 'safe_vanity');
+  const release = join(MINER_ROOT, 'target', 'release', 'safe_vanity');
+  const debug = join(MINER_ROOT, 'target', 'debug', 'safe_vanity');
   if (existsSync(release)) return { cmd: release, args: minerArgs, cwd: undefined };
   if (existsSync(debug)) return { cmd: debug, args: minerArgs, cwd: undefined };
   if (raw === 'safe_vanity') {
-    return { cmd: 'cargo', args: ['run', '-p', 'safe_vanity', '--', ...minerArgs], cwd: SAFE_VANITY_ROOT };
+    return { cmd: 'cargo', args: ['run', '-p', 'safe_vanity', '--', ...minerArgs], cwd: MINER_ROOT };
   }
   return { cmd: raw, args: minerArgs, cwd: undefined };
 }
@@ -214,7 +214,7 @@ async function main() {
       console.error('');
       console.error('Failed to run miner:', err.message);
       if ((config.minerPath || 'safe_vanity') === 'safe_vanity') {
-        console.error('Build the miner: cd', SAFE_VANITY_ROOT, '&& cargo build --release');
+        console.error('Build the miner: cd', MINER_ROOT, '&& cargo build --release');
         console.error('Or set minerPath in safe-vanity.config.json to the full path of safe_vanity.');
       }
       reject(err);

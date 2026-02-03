@@ -8,11 +8,11 @@ Single-flow: config → fetch Safe params → mine → verify. Only **owners**, 
 npm install
 ```
 
-Build the Rust miner (from `safe-vanity` repo root):
+Build the Rust miner (from `safe-vanity` repo root; miner lives in `miner/`):
 
 ```bash
-cargo build --release
-# optional: cargo install --path .  → puts safe_vanity on PATH
+cargo build -p safe_vanity --release
+# Binary: target/release/safe_vanity. Or: cd miner && cargo build --release
 ```
 
 ## Config

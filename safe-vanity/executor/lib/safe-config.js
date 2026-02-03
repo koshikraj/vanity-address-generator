@@ -73,7 +73,7 @@ export function strip0x(hex) {
 
 /**
  * Load config from file and merge with defaults.
- * Searches: configPath, ./safe-vanity.config.json, ./verify-with-safe-sdk/safe-vanity.config.json, env SAFE_VANITY_CONFIG.
+ * Searches: configPath, ./safe-vanity.config.json, ./executor/safe-vanity.config.json, env SAFE_VANITY_CONFIG.
  */
 export function loadConfig(configPath) {
   const defaults = { ...DEFAULT_CONFIG };
@@ -81,7 +81,7 @@ export function loadConfig(configPath) {
     configPath,
     process.env.SAFE_VANITY_CONFIG,
     join(process.cwd(), 'safe-vanity.config.json'),
-    join(process.cwd(), 'verify-with-safe-sdk', 'safe-vanity.config.json'),
+    join(process.cwd(), 'executor', 'safe-vanity.config.json'),
     join(__dirname, '..', 'safe-vanity.config.json'),
   ].filter(Boolean);
 
